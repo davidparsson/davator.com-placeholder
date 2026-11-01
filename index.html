@@ -1,0 +1,300 @@
+<!doctype html>
+<html lang="sv">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>placeholder</title>
+  <style>
+    html, body {
+      margin: 0;
+      height: 100%;
+      overflow: hidden;
+    }
+    body {
+      background: radial-gradient(ellipse farthest-corner at 50% 50%, #fff 20%, #e2e0db 100%);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .term {
+      --grey: 154;
+      font-family: ui-monospace, Menlo, Monaco, Consolas, "Courier New", monospace;
+      font-size: clamp(0.45rem, 1.43vw, 0.98rem);
+      color: rgb(var(--grey), var(--grey), var(--grey));
+      text-shadow:
+        0 0 1px rgba(140, 140, 140, 0.35),
+        0 0 4px rgba(150, 150, 150, 0.18),
+        0 0 12px rgba(160, 160, 160, 0.1);
+      letter-spacing: 0.02em;
+      white-space: pre;
+      user-select: none;
+      position: relative;
+    }
+    .line.small {
+      opacity: 0.6;
+      margin-top: 0.3em;
+    }
+    .later {
+      position: absolute;
+      top: 100%;
+      left: 0;
+    }
+    .ch { visibility: hidden; }
+    .ch.on { visibility: visible; }
+    .cursor {
+      position: absolute;
+      animation: blink 1s steps(1) infinite;
+    }
+    .typing .cursor {
+      animation: none;
+    }
+    @keyframes blink {
+      50% { opacity: 0; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .cursor { animation: none; }
+    }
+    #dots {
+      position: fixed;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      pointer-events: none;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="dots"></canvas>
+  <div class="term" id="term"></div>
+
+  <script>
+    const el = document.getElementById('term');
+    const rand = (a, b) => a + Math.random() * (b - a);
+    const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+    const DOMAIN = new URLSearchParams(location.search).get('domain')
+      || location.hostname.replace(/^www\./, '')
+      || 'placeholder';
+    const ROWS = [DOMAIN, 'just used for email hosting'];
+    const LATER_ROWS = ['', 'still here? :)'];
+    const LATER_DELAY = 90000;
+    const REF_ROW = 1;
+    const ALL_ROWS = [...ROWS, ...LATER_ROWS];
+    document.title = DOMAIN;
+    el.setAttribute('aria-label', ROWS.join(' – '));
+
+    const later = document.createElement('div');
+    later.className = 'later';
+    el.appendChild(later);
+    const chars = [];
+    const rowChars = [];
+    const rowEls = ALL_ROWS.map((text, row) => {
+      const line = document.createElement('div');
+      line.className = row > 0 ? 'line small' : 'line';
+      line.setAttribute('aria-hidden', 'true');
+      const inner = line.appendChild(document.createElement('span'));
+      if (!text) inner.textContent = ' ';
+      rowChars[row] = [];
+      for (const ch of text) {
+        const span = inner.appendChild(document.createElement('span'));
+        span.className = 'ch';
+        span.textContent = ch;
+        span.dark = 0;
+        span.grey = -1;
+        chars.push({ span, row });
+        rowChars[row].push(span);
+      }
+      if (row === REF_ROW) {
+        const ghost = inner.appendChild(document.createElement('span'));
+        ghost.className = 'ch';
+        ghost.textContent = '_';
+      }
+      (row < ROWS.length ? el.insertBefore(line, later) : later.appendChild(line));
+      return inner;
+    });
+
+    const refW = rowEls[REF_ROW].getBoundingClientRect().width;
+    rowEls[0].parentElement.style.fontSize = refW / rowEls[0].getBoundingClientRect().width + 'em';
+
+    const cursor = document.createElement('span');
+    cursor.className = 'cursor';
+    cursor.textContent = '_';
+    rowEls[0].prepend(cursor);
+
+    const KEYS = {
+      ' ': { x: 4.5, y: 3, finger: 8, hand: 2 },
+      '\n': { x: 12.5, y: 1, finger: 7, hand: 1 },
+    };
+    [['qwertyuiopå', 0, 0], ['asdfghjklöä', 1, 0.25], ['zxcvbnm,.-', 2, 0.75]]
+      .forEach(([keys, y, off]) => [...keys].forEach((ch, c) => {
+        const finger = c <= 3 ? c : c <= 4 ? 3 : c <= 6 ? 4 : Math.min(c - 2, 7);
+        KEYS[ch] = { x: c + off, y, finger, hand: finger < 4 ? 0 : 1 };
+      }));
+
+    function baseDelay(a, b) {
+      const ka = KEYS[a.toLowerCase()], kb = KEYS[b.toLowerCase()];
+      if (!ka || !kb) return 150;
+      const dist = Math.hypot(kb.x - ka.x, kb.y - ka.y);
+      if (a === b) return 185;
+      if (ka.hand !== kb.hand) return 95 + 10 * dist / 4;
+      if (ka.finger !== kb.finger) return 125 + 25 * Math.log2(1 + dist);
+      return 165 + 45 * dist;
+    }
+
+    const SPEED = 0.6;
+    const PAUSE_AFTER = { '.': [80, 260] };
+    const ENTER_PAUSE = [500, 800];
+    const NEW_ROW_PAUSE = [1100, 1400];
+
+    function keyDelay(a, b) {
+      const g = Math.sqrt(-2 * Math.log(1 - Math.random())) * Math.cos(2 * Math.PI * Math.random());
+      let d = baseDelay(a, b) * Math.exp(g * 0.3);
+      if (Math.random() < 0.08) d += rand(200, 550);
+      if (PAUSE_AFTER[a]) d += rand(...PAUSE_AFTER[a]);
+      return d * SPEED;
+    }
+
+    async function typeRows(from, to) {
+      el.classList.add('typing');
+      for (let r = from; r < to; r++) {
+        if (r > 0) {
+          await sleep(ALL_ROWS[r - 1] ? rand(...ENTER_PAUSE) * SPEED : keyDelay('\n', '\n'));
+          rowEls[r].prepend(cursor);
+          if (ALL_ROWS[r]) await sleep(rand(...NEW_ROW_PAUSE) * SPEED);
+        }
+        for (let i = 0; i < rowChars[r].length; i++) {
+          const span = rowChars[r][i];
+          if (i > 0) await sleep(keyDelay(rowChars[r][i - 1].textContent, span.textContent));
+          span.classList.add('on');
+          span.after(cursor);
+        }
+      }
+      el.classList.remove('typing');
+    }
+
+    function showRows(from, to) {
+      for (let r = from; r < to; r++) rowChars[r].forEach(span => span.classList.add('on'));
+      const lastRow = rowChars[to - 1];
+      lastRow.length ? lastRow.at(-1).after(cursor) : rowEls[to - 1].prepend(cursor);
+    }
+
+    const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
+    (async () => {
+      if (reduced) showRows(0, ROWS.length);
+      else { await sleep(900); await typeRows(0, ROWS.length); }
+      await sleep(LATER_DELAY);
+      if (reduced) showRows(ROWS.length, ALL_ROWS.length);
+      else await typeRows(ROWS.length, ALL_ROWS.length);
+    })();
+
+    const cv = document.getElementById('dots');
+    const ctx = cv.getContext('2d');
+    let W = 0, H = 0, box = null;
+    function layout() {
+      const dpr = window.devicePixelRatio || 1;
+      W = window.innerWidth; H = window.innerHeight;
+      cv.width = W * dpr; cv.height = H * dpr;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      const r = el.getBoundingClientRect();
+      box = { hw: r.width / 2, hh: r.height / 2, cx: r.left + r.width / 2, cy: r.top + r.height / 2 };
+      for (const { span } of chars) {
+        const s = span.getBoundingClientRect();
+        span.cx = s.left + s.width / 2;
+        span.cy = s.top + s.height / 2;
+      }
+    }
+    layout();
+    window.addEventListener('resize', layout);
+
+    const mouse = { x: -1e4, y: -1e4 };
+    const hideMouse = () => { mouse.x = mouse.y = -1e4; };
+    window.addEventListener('pointermove', e => { mouse.x = e.clientX; mouse.y = e.clientY; });
+    window.addEventListener('pointerup', e => { if (e.pointerType !== 'mouse') hideMouse(); });
+    window.addEventListener('pointercancel', hideMouse);
+    document.documentElement.addEventListener('pointerleave', hideMouse);
+
+    const N = 12;
+    const PULL = 2.5;
+    const FRICTION = 0.35;
+    const REPEL_R = 70;
+    const REPEL = 900;
+    const MOUSE_R = 130;
+    const MOUSE_REPEL = 4000;
+    const MAXV = 1400;
+    const DOT_ALPHA = (255 - 120) / 255;
+
+    const dots = Array.from({ length: N }, () => ({
+      x: rand(0, W), y: rand(0, H), vx: 0, vy: 0, ax: 0, ay: 0, sp: 0,
+      r: rand(1.3, 2.6),
+      orbit: rand(35, 150),
+      w: (Math.random() < 0.5 ? -1 : 1) * rand(0.25, 0.8),
+      a: rand(0, Math.PI * 2),
+      breathe: rand(0.15, 0.4),
+      ph: rand(0, Math.PI * 2)
+    }));
+
+    function repel(d, px, py, R, K) {
+      const dx = d.x - px, dy = d.y - py;
+      const dist = Math.hypot(dx, dy);
+      if (dist > 0 && dist < R) {
+        const f = (1 - dist / R) ** 2 * K / dist;
+        d.ax += dx * f; d.ay += dy * f;
+      }
+    }
+
+    const DARK_R = 160;
+    const DARK_GREY = 60;
+    const BASE_GREY = parseFloat(getComputedStyle(el).getPropertyValue('--grey'));
+
+    let last = performance.now();
+    function step(now) {
+      const dt = Math.min((now - last) / 1000, 1 / 30);
+      const t = now / 1000;
+      last = now;
+
+      for (const d of dots) {
+        d.a += d.w * dt;
+        const rad = d.orbit * (1 + 0.35 * Math.sin(t * d.breathe + d.ph));
+        const gx = box.cx + Math.cos(d.a) * (box.hw + rad);
+        const gy = box.cy + Math.sin(d.a) * (box.hh + rad * 0.7);
+
+        d.ax = (gx - d.x) * PULL - d.vx * FRICTION;
+        d.ay = (gy - d.y) * PULL - d.vy * FRICTION;
+        for (const o of dots) if (o !== d) repel(d, o.x, o.y, REPEL_R, REPEL);
+        repel(d, mouse.x, mouse.y, MOUSE_R, MOUSE_REPEL);
+
+        d.vx += d.ax * dt;
+        d.vy += d.ay * dt;
+        d.sp = Math.hypot(d.vx, d.vy);
+        if (d.sp > MAXV) { d.vx *= MAXV / d.sp; d.vy *= MAXV / d.sp; d.sp = MAXV; }
+        d.x += d.vx * dt;
+        d.y += d.vy * dt;
+      }
+
+      const kc = 1 - Math.exp(-8 * dt);
+      for (const { span } of chars) {
+        const dist = Math.hypot(span.cx - mouse.x, span.cy - mouse.y);
+        const target = Math.max(0, 1 - dist / DARK_R) ** 2;
+        span.dark += (target - span.dark) * kc;
+        if (span.dark < 0.002) span.dark = 0;
+        const v = Math.round(BASE_GREY - (BASE_GREY - DARK_GREY) * span.dark);
+        if (v !== span.grey) {
+          span.grey = v;
+          span.style.color = span.dark ? `rgb(${v}, ${v}, ${v})` : '';
+        }
+      }
+
+      ctx.clearRect(0, 0, W, H);
+      ctx.fillStyle = '#000';
+      for (const d of dots) {
+        ctx.globalAlpha = (0.4 - Math.min(d.sp / 3000, 0.2)) * DOT_ALPHA;
+        ctx.beginPath();
+        ctx.arc(d.x, d.y, d.r, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      requestAnimationFrame(step);
+    }
+    requestAnimationFrame(step);
+  </script>
+</body>
+</html>
